@@ -1,17 +1,17 @@
 Manually sync a local folder to an AWS s3 bucket.
 
-#WARNING 1
-This is permanent. If you use existing folder names or set up a synced folder with the wrong path, you can end up deleting or overwriting something you didn't plan to. Also, I do not guarantee the safety of your files, even with `safe=True`. This is alpha software. Use at your own risk (and pick unique folder names).
+# WARNING 1
+Filesystem changes are permanent. If you use existing folder names or set up a synced folder with the wrong path, you can end up deleting or overwriting something you didn't plan to. Also, I do not guarantee the safety of your files, even with `safe=True`. This is alpha software. Use at your own risk (and pick unique folder names).
 
-#WARNING 2
+# WARNING 2
 The tests create files on your system and your AWS account. Not temp files, real files. These tests write to your harddrive!
 
-##purpose?
+## purpose?
 It's a bad practice to commit binaries to GitHub. If you're not at all interested in VC on your binaries, AWS is a reasonable choice for binary storage, but reassembling your project once code and binaries are in two different places is not straightforward.
 
 Unless I've really missed something, this takes an obscene amount of code. It took too much time to figure this out, so I'm sharing it. Hopefully someone more knowledgeable than I will come along and fork this onto Pypi. Works great for me though.
 
-##to use
+## to use
 
 ```
 from s3 linked folders import RemoteBucket
@@ -29,6 +29,14 @@ link.pull()
 
 # pull AWS to local, delete conflicts on local
 link.pull(safe=False)
+```
+
+You'll need a `.git` config folder in your home directory. At a minimum, this folder must contain a file, `config` with the following.
+
+```
+[default]
+aws_access_key_id = jumbleofcharacters
+aws_secret_access_key = jumbleofcharacters
 ```
 
 ## methods comparison

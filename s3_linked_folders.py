@@ -10,7 +10,6 @@ import hashlib
 import os
 import re
 import shutil
-import warnings
 from typing import Any, Dict, List, Set
 
 import boto3

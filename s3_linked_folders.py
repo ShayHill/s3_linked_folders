@@ -6,16 +6,35 @@
 :created: 11/13/2020
 """
 
+import glob
 import hashlib
 import os
 import re
 import shutil
-from typing import Any, Dict, List, Set
+from pathlib import Path
+from typing import Any, Dict, List, Set, Union
 
 import boto3
 
 s3 = boto3.resource("s3")
 s3client = boto3.client("s3")
+
+
+def _recursive_listdir(directory: Union[Path, str]) -> Set[str]:
+    """
+    Recursively list files from directory.
+
+    :param directory: start of search
+    :return: filenames in directory and subfolders in directory
+
+    Files in subdirectories will be returned with forward slashes: 'subdirectory/file'
+    """
+    directory = str(directory)
+    name_beg = len(directory) + 1
+    files = set(glob.iglob(directory + "**/**", recursive=True))
+    files = {x[name_beg:] for x in files if os.path.isfile(x)}
+    files = {x.replace("\\", "/") for x in files}
+    return files
 
 
 def _create_s3_bucket(bucket_name: str) -> None:
@@ -67,17 +86,18 @@ def _list_s3_bucket_items(bucket_name: str) -> List[Dict[str, Any]]:
     return s3client.list_objects_v2(Bucket=bucket_name).get("Contents", [])
 
 
-def _upload_file_to_s3(bucket_name: str, complete_file_path: str):
+def _upload_file_to_s3(bucket_name: str, folder: Union[str, Path], file: str):
     """
     Upload a file to S3
 
-    :param complete_file_path:
+    :param bucket_name:
+    :param folder:
+    :param file:
     :return:
     """
-    data = open(os.path.normpath(complete_file_path), "rb")
-    file_basename = os.path.basename(complete_file_path)
-    s3.Bucket(bucket_name).put_object(Key=file_basename, Body=data)
-    print(f"uploaded {file_basename} to {bucket_name}")
+    data = open(os.path.normpath(folder / file), "rb")
+    s3.Bucket(bucket_name).put_object(Key=file, Body=data)
+    print(f"uploaded {file} to {bucket_name}")
 
 
 def _compare_remote_to_local(bucket_name: str, local_dir: str) -> Dict[str, Set[str]]:
@@ -94,11 +114,13 @@ def _compare_remote_to_local(bucket_name: str, local_dir: str) -> Dict[str, Set[
     """
     state2names = {}
     name2remote = {x["Key"]: x for x in _list_s3_bucket_items(bucket_name)}
-    local = set(os.listdir(local_dir))
+    local = _recursive_listdir(local_dir)
+
     state2names["remote only"] = set(name2remote) - local
     state2names["local only"] = local - set(name2remote)
     state2names["hash different"] = set()
     state2names["hash same"] = set()
+
     for name in local & set(name2remote):
         local_hash = _hash_local_file(os.path.join(local_dir, name))
         remote_hash = name2remote[name]["ETag"][1:-1]
@@ -123,6 +145,7 @@ def _get_next_revision(filename: str, prefix: str) -> str:
         >>> _get_next_revision('[rev0]filename.png', 'pre')
         '[rev1]filename.png'
     """
+    folder, filename = os.path.split(filename)
     pattern = rf"\[{prefix}(?P<rev>\d+)\](?P<name>.+)"
     rev_number = re.match(pattern, filename)
     if rev_number:
@@ -131,7 +154,10 @@ def _get_next_revision(filename: str, prefix: str) -> str:
     else:
         rev = 0
         name = filename
-    return f"[{prefix}{rev}]{name}"
+    filename = f"[{prefix}{rev}]{name}"
+    if folder:
+        return folder + "/" + filename
+    return filename
 
 
 def _push_s3_bucket(bucket_name: str, local_dir: str, safe: bool = True) -> None:
@@ -151,24 +177,8 @@ def _push_s3_bucket(bucket_name: str, local_dir: str, safe: bool = True) -> None
         s3.Object(bucket_name, name).delete()
 
     for name in state2names["local only"] | state2names["hash different"]:
-        path = os.path.join(local_dir, name)
-        _upload_file_to_s3(bucket_name, path)
+        _upload_file_to_s3(bucket_name, local_dir, name)
 
-    # if do_delete_unmatched:
-    #
-    #     def remove(name_):
-    #         s3.Object(bucket_name, name_).delete()
-    #
-    # else:
-    #
-    #     def remove(name_):
-    #         warnings.warn(
-    #             f"{name_} exists in bucket {bucket_name} "
-    #             f"but not in local folder {local_dir}"
-    #         )
-    #
-    # for name in state2names["remote only"]:
-    #     remove(name)
     print(f"pushed content from {local_dir} to S3 {bucket_name}")
 
 
@@ -192,21 +202,6 @@ def _pull_s3_bucket(bucket_name: str, local_dir: str, safe: bool = True) -> None
         path = os.path.join(local_dir, name)
         s3client.download_file(bucket_name, name, path)
 
-    # if do_delete_unmatched:
-    #
-    #     def remove(name_):
-    #         os.remove(os.path.join(local_dir, name_))
-    #
-    # else:
-    #
-    #     def remove(name_):
-    #         warnings.warn(
-    #             f"{name_} exists in local folder {local_dir} "
-    #             f"but not in s3 {bucket_name}"
-    #         )
-    #
-    # for name in state2names["local only"]:
-    #     remove(name)
     print(f"pulled content from S3 {bucket_name} to {local_dir}")
 
 

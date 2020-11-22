@@ -13,6 +13,7 @@ import re
 import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Set, Union
+from contextlib import suppress
 
 import boto3
 
@@ -199,8 +200,10 @@ def _pull_s3_bucket(bucket_name: str, local_dir: str, safe: bool = True) -> None
         os.remove(old_path)
 
     for name in state2names["remote only"] | state2names["hash different"]:
-        path = os.path.join(local_dir, name)
-        s3client.download_file(bucket_name, name, path)
+        path = Path(local_dir) / name
+        with suppress(FileExistsError):
+            os.makedirs(path.parent)
+        s3client.download_file(bucket_name, name, str(path))
 
     print(f"pulled content from S3 {bucket_name} to {local_dir}")
 

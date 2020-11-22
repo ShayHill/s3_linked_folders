@@ -6,7 +6,7 @@
 :created: 11/20/2020
 """
 
-raise RuntimeError('read the README then comment out this line to run the tests.')
+# raise RuntimeError('read the README then comment out this line to run the tests.')
 
 import os
 from contextlib import suppress
@@ -224,6 +224,28 @@ class TestRemoteBucket:
         _create_local_files(files)
         matching_state.push()
         matching_state.pull()
+        assert _compare_remote_to_local(TEMP_S3_BUCKET, TEMP_LOCAL_DIR) == {
+            "remote only": set(),
+            "local only": set(),
+            "hash different": set(),
+            "hash same": {
+                "remote_only",
+                "sub1/sub2/2deep.file",
+                "hash_different",
+                "sub1/1deep.file",
+                "hash_same",
+                "local_only",
+            },
+        }
+
+    def test_pull_subfolders(self, matching_state) -> None:
+        """Subfolders write to s3 as subfolder/filename, any depth"""
+        files = {"sub1/1deep.file", "sub1/sub2/2deep.file"}
+        _create_local_files(files)
+        matching_state.push()
+        os.remove(TEMP_LOCAL_DIR / "sub1/1deep.file")
+        matching_state.pull()
+        breakpoint()
         assert _compare_remote_to_local(TEMP_S3_BUCKET, TEMP_LOCAL_DIR) == {
             "remote only": set(),
             "local only": set(),

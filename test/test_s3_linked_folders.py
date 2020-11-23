@@ -37,9 +37,8 @@ def _create_local_files(files: Iterable[str]) -> None:
     :effects: write files to local filesystem
     """
     for filename in files:
-        subfolders, _ = os.path.split(filename)
-        with suppress(FileExistsError):
-            os.makedirs(TEMP_LOCAL_DIR / subfolders)
+        filename = Path(filename)
+        filename.parent.mkdir(parents=True, exist_ok=True)
         with open(TEMP_LOCAL_DIR / filename, "w") as file:
             file.write(filename)
 
@@ -139,17 +138,17 @@ def unmatched_state(matching_state) -> RemoteBucket:
 class TestGetNextRevision:
     def test_new_rev(self) -> None:
         """Add rev prefix if none exists"""
-        assert _get_next_revision("filename.ext", "rev") == "[rev0]filename.ext"
+        assert _get_next_revision("filename.ext", "rev") == Path("[rev0]filename.ext")
 
     def test_update_rev(self) -> None:
         """Update rev number is previous rev found"""
-        assert _get_next_revision("[rev9]filename.ext", "rev") == "[rev10]filename.ext"
+        assert Path(_get_next_revision("[rev9]filename.ext", "rev")) == Path("[rev10]filename.ext")
 
     def test_subfolder_rev(self) -> None:
         """Update rev of file, not subfolder"""
         assert (
-            _get_next_revision("subfolder/[rev9]filename.ext", "rev")
-            == "subfolder/[rev10]filename.ext"
+            Path(_get_next_revision("subfolder/[rev9]filename.ext", "rev"))
+            == Path("subfolder/[rev10]filename.ext")
         )
 
 
@@ -245,7 +244,6 @@ class TestRemoteBucket:
         matching_state.push()
         os.remove(TEMP_LOCAL_DIR / "sub1/1deep.file")
         matching_state.pull()
-        breakpoint()
         assert _compare_remote_to_local(TEMP_S3_BUCKET, TEMP_LOCAL_DIR) == {
             "remote only": set(),
             "local only": set(),

@@ -6,14 +6,11 @@
 :created: 11/13/2020
 """
 
-import glob
 import hashlib
-import os
 import re
 import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Set, Union
-from contextlib import suppress
 
 import boto3
 
@@ -21,26 +18,20 @@ s3 = boto3.resource("s3")
 s3client = boto3.client("s3")
 
 
-def _recursive_listdir(directory: Union[Path, str]) -> Set[str]:
+def _recursive_listdir(directory: Path) -> Set[str]:
     """
     Recursively list files from directory.
 
     :param directory: start of search
-    :return: filenames in directory and subfolders in directory
-
-    Files in subdirectories will be returned with forward slashes: 'subdirectory/file'
+    :return: relative path to every file in the directory
     """
-    directory = str(directory)
-    name_beg = len(directory) + 1
-    files = set(glob.iglob(directory + "**/**", recursive=True))
-    files = {x[name_beg:] for x in files if os.path.isfile(x)}
-    files = {x.replace("\\", "/") for x in files}
-    return files
+    files = {x for x in directory.glob("**/*") if x.is_file()}
+    return {str(x.relative_to(directory).as_posix()) for x in files}
 
 
 def _create_s3_bucket(bucket_name: str) -> None:
     """
-    Create a bucket on S3
+    Create a bucket on S3, skip if bucket exists
 
     :param bucket_name: name of new bucket
     """
@@ -87,21 +78,20 @@ def _list_s3_bucket_items(bucket_name: str) -> List[Dict[str, Any]]:
     return s3client.list_objects_v2(Bucket=bucket_name).get("Contents", [])
 
 
-def _upload_file_to_s3(bucket_name: str, folder: Union[str, Path], file: str):
+def _upload_file_to_s3(bucket_name: str, local_dir: Path, file: str) -> None:
     """
     Upload a file to S3
 
-    :param bucket_name:
-    :param folder:
-    :param file:
-    :return:
+    :param bucket_name: bucket name on s3
+    :param local_dir: local directory where file exists
+    :param file: file (relative path from local_dir)
     """
-    data = open(os.path.normpath(folder / file), "rb")
+    data = open(local_dir / file, "rb")
     s3.Bucket(bucket_name).put_object(Key=file, Body=data)
     print(f"uploaded {file} to {bucket_name}")
 
 
-def _compare_remote_to_local(bucket_name: str, local_dir: str) -> Dict[str, Set[str]]:
+def _compare_remote_to_local(bucket_name: str, local_dir: Path) -> Dict[str, Set[str]]:
     """
     Compare S3 bucket contents to a local folder contents.
 
@@ -123,7 +113,7 @@ def _compare_remote_to_local(bucket_name: str, local_dir: str) -> Dict[str, Set[
     state2names["hash same"] = set()
 
     for name in local & set(name2remote):
-        local_hash = _hash_local_file(os.path.join(local_dir, name))
+        local_hash = _hash_local_file(local_dir / name)
         remote_hash = name2remote[name]["ETag"][1:-1]
         if local_hash == remote_hash:
             state2names["hash same"].add(name)
@@ -132,7 +122,7 @@ def _compare_remote_to_local(bucket_name: str, local_dir: str) -> Dict[str, Set[
     return state2names
 
 
-def _get_next_revision(filename: str, prefix: str) -> str:
+def _get_next_revision(filename: Union[Path, str], prefix: str) -> str:
     """
     Add or update a numbered prefix to a filename.
 
@@ -140,25 +130,33 @@ def _get_next_revision(filename: str, prefix: str) -> str:
     :param prefix: string to identify revision source
     :return:
 
-        >>> _get_next_revision('filename.png', 'pre')
-        '[rev0]filename.png'
+        # create prefix
+        >>> str(_get_next_revision('filename.png', 'loc'))
+        str(Path('[loc0]filename.png'))
 
-        >>> _get_next_revision('[rev0]filename.png', 'pre')
-        '[rev1]filename.png'
+        # update prefix
+        >>> str(_get_next_revision('[rem0]filename.png', 'rem'))
+        str(Path('[rem1]filename.png'))
+
+        # create with path
+        >>> str(_get_next_revision(Path('folder/filename.png'), 'loc'))
+        str(Path('folder/[loc0]filename.png'))
+
+        # update with path
+        >>> str(_get_next_revision(Path('folder/[loc99]filename.png'), 'loc'))
+        str(Path('folder/[loc100]filename.png'))
+
     """
-    folder, filename = os.path.split(filename)
+    filename = Path(filename)
     pattern = rf"\[{prefix}(?P<rev>\d+)\](?P<name>.+)"
-    rev_number = re.match(pattern, filename)
+    rev_number = re.match(pattern, filename.name)
     if rev_number:
         rev = int(rev_number["rev"]) + 1
         name = rev_number["name"]
     else:
         rev = 0
-        name = filename
-    filename = f"[{prefix}{rev}]{name}"
-    if folder:
-        return folder + "/" + filename
-    return filename
+        name = filename.name
+    return filename.parent / f"[{prefix}{rev}]{name}"
 
 
 def _push_s3_bucket(bucket_name: str, local_dir: str, safe: bool = True) -> None:
@@ -173,8 +171,8 @@ def _push_s3_bucket(bucket_name: str, local_dir: str, safe: bool = True) -> None
     for name in state2names["hash different"] | state2names["remote only"]:
         if safe:
             old_path = bucket_name + "/" + name
-            new_name = _get_next_revision(name, "rem")
-            s3.Object(bucket_name, new_name).copy_from(CopySource=old_path)
+            new_path = str(_get_next_revision(name, "rem").as_posix())
+            s3.Object(bucket_name, str(new_path)).copy_from(CopySource=str(old_path))
         s3.Object(bucket_name, name).delete()
 
     for name in state2names["local only"] | state2names["hash different"]:
@@ -183,7 +181,7 @@ def _push_s3_bucket(bucket_name: str, local_dir: str, safe: bool = True) -> None
     print(f"pushed content from {local_dir} to S3 {bucket_name}")
 
 
-def _pull_s3_bucket(bucket_name: str, local_dir: str, safe: bool = True) -> None:
+def _pull_s3_bucket(bucket_name: str, local_dir: Path, safe: bool = True) -> None:
     """
     Overwrite contents of local_dir with S3 bucket.
 
@@ -193,17 +191,16 @@ def _pull_s3_bucket(bucket_name: str, local_dir: str, safe: bool = True) -> None
     state2names = _compare_remote_to_local(bucket_name, local_dir)
 
     for name in state2names["hash different"] | state2names["local only"]:
-        old_path = os.path.join(local_dir, name)
+        old_path = local_dir / name
         if safe:
-            new_path = os.path.join(local_dir, _get_next_revision(name, "loc"))
+            new_path = local_dir / _get_next_revision(name, "loc")
             shutil.copy2(old_path, new_path)
-        os.remove(old_path)
+        old_path.unlink()
 
     for name in state2names["remote only"] | state2names["hash different"]:
-        path = Path(local_dir) / name
-        with suppress(FileExistsError):
-            os.makedirs(path.parent)
-        s3client.download_file(bucket_name, name, str(path))
+        local_filename = Path(local_dir) / name
+        local_filename.parent.mkdir(parents=True, exist_ok=True)
+        s3client.download_file(bucket_name, name, str(local_filename))
 
     print(f"pulled content from S3 {bucket_name} to {local_dir}")
 
@@ -211,12 +208,11 @@ def _pull_s3_bucket(bucket_name: str, local_dir: str, safe: bool = True) -> None
 class RemoteBucket:
     """An S3 bucket synced to a local file."""
 
-    def __init__(self, bucket_name: str, local_dir: str) -> None:
+    def __init__(self, bucket_name: str, local_dir: Union[Path, str]) -> None:
         self.bucket_name = bucket_name
-        self.local_dir = local_dir
-        if not os.path.exists(local_dir):
-            os.mkdir(local_dir)
+        self.local_dir = Path(local_dir)
         _create_s3_bucket(bucket_name)
+        self.local_dir.mkdir(parents=True, exist_ok=True)
 
     def push(self, safe: bool = True) -> None:
         """Push all files from the local folder to the S3 bucket."""
@@ -225,3 +221,24 @@ class RemoteBucket:
     def pull(self, safe: bool = True) -> None:
         """Pull all files from the S3 bucket to the local folder."""
         _pull_s3_bucket(self.bucket_name, self.local_dir, safe)
+
+    @property
+    def local_filenames(self) -> Set[str]:
+        """Get relative paths from self.local_dir"""
+        return _recursive_listdir(self.local_dir)
+
+    @property
+    def remote_items(self) -> Set[Dict[str, Any]]:
+        """Item dictionaries in bucket"""
+        return set(_list_s3_bucket_items(self.bucket_name))
+
+    @property
+    def remote_filenames(self) -> Set[str]:
+        """Get relative paths from bucket"""
+        return {x["Key"] for x in self.remote_items}
+
+
+if __name__ == "__main__":
+    import doctest
+
+    doctest.testmod()
